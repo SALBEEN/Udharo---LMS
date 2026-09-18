@@ -1,4 +1,4 @@
-// user login setup here
+// ----------------- IMPORTS -------------------
 import User from "../Schemas/User.schema.js";
 import admin from "firebase-admin";
 import bcrypt from "bcrypt";
@@ -6,7 +6,7 @@ import jwt from "jsonwebtoken";
 
 // ----------------- LOGOUT -------------------
 
-export const Signup = async (req, res) => {
+const Signup = async (req, res) => {
   const { idToken, name, password, role, lenderAddress, storeAddress } =
     req.body;
 
@@ -143,13 +143,30 @@ const Login = async (req, res) => {
   }
 
   // generate JWT token
-  const token = jwt.sign(
+
+  const accessToken = jwt.sign(
     { id: user._id, role: user.role, phoneNumber: user.phoneNumber },
     process.env.JWT_SECRET,
     {
       expiresIn: process.env.JWT_EXPIRE_IN,
     },
   );
+
+  const refreshToken = jwt.sign(
+    { id: user._id, role: user.role, phoneNumber: user.phoneNumber },
+    process.env.JWT_REFRESH_SECRET,
+    {
+      expiresIn: process.env.JWT_REFRESH_EXPIRE_IN,
+    },
+  );
+
+  // set the refresh token in the cookie
+  res.cookie("refreshToken", refreshToken, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production", // set to true in production
+    sameSite: "strict",
+    maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+  });
 
   // send response
   res.status(200).json({
@@ -159,9 +176,70 @@ const Login = async (req, res) => {
     createdAt: user.createdAt,
     updatedAt: user.updatedAt,
     success: true,
+    accessToken: accessToken,
     message: "User logged in successfully.",
-    token: token,
   });
 };
 
-export { Login };
+// ----------------- REFRESH TOKEN -------------------
+
+const refreshToken = async (req, res) => {
+  try {
+    // 1. Grab the refresh token from the HttpOnly cookie
+    const token = req.cookies.refreshToken;
+
+    // 2. If no token exists, they are completely logged out
+    if (!token) {
+      return res.status(401).json({
+        success: false,
+        message: "No refresh token provided. Please log in.",
+      });
+    }
+
+    // 3. Verify the refresh token
+    jwt.verify(token, process.env.JWT_REFRESH_SECRET, (err, decoded) => {
+      if (err) {
+        // Token is expired or tampered with
+        return res.status(403).json({
+          success: false,
+          message: "Invalid or expired refresh token. Please log in again.",
+        });
+      }
+
+      // 4. Token is valid! Issue a new short-lived Access Token
+      // 'decoded' contains the payload you signed during login (e.g., userId)
+      const newAccessToken = jwt.sign(
+        { userId: decoded.userId, role: decoded.role },
+        process.env.JWT_SECRET,
+        { expiresIn: "15m" },
+      );
+
+      // 5. Send the new access token back to the frontend
+      res.status(200).json({
+        success: true,
+        accessToken: newAccessToken,
+      });
+    });
+  } catch (error) {
+    console.error("Refresh Error:", error);
+    res
+      .status(500)
+      .json({ success: false, message: "Server error during token refresh." });
+  }
+};
+
+// ------------------- LOG OUT ------------------
+
+const logoutUser = (req, res) => {
+  // Clear the HttpOnly cookie
+  res.clearCookie("refreshToken", {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "strict",
+  });
+
+  res.status(200).json({ success: true, message: "Logged out successfully." });
+};
+
+// ------------------ EXPORTS -------------------
+export { refreshToken, logoutUser, Signup, Login };
