@@ -294,4 +294,11 @@ const deleteProduct = asyncHandler(async (req, res) => {
 
 // ----------------- Export Controller Functions -----------------
 
-export { createProduct, getAllProducts };
+export {
+  createProduct,
+  getAllProducts,
+  getSingleProduct,
+  updateProduct,
+  toggleAvailability,
+  deleteProduct,
+};
