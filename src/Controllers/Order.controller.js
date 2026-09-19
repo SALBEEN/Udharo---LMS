@@ -80,9 +80,11 @@ const createOrder = async (req, res) => {
     }
 
     // Calculate total cost
-    const rentalDays =
+    let rentalDays = Math.ceil(
       (new Date(rentalEndDate) - new Date(rentalStartDate)) /
-      (1000 * 60 * 60 * 24);
+        (1000 * 60 * 60 * 24),
+    );
+    if (rentalDays === 0) rentalDays = 1; // Same-day rental counts as 1 day
     const totalCost = rentalDays * product.pricePerDay + product.damageFund;
 
     // Create order
@@ -111,7 +113,7 @@ const getIncomingOrders = async (req, res) => {
 
     // Fetch orders where the logged-in user is the lender
     const orders = await Order.find({ lender: lenderId }).sort({
-      status: 1, // Sort by status (Pending, Active, Completed)
+      createdAt: -1, // Sort by creation date (newest first)
     });
 
     res.status(200).json({ message: "Incoming orders fetched", orders });
@@ -150,6 +152,12 @@ const updateOrderStatus = async (req, res) => {
     const order = await Order.findById(orderId);
     if (!order) {
       return res.status(404).json({ message: "Order not found" });
+    }
+
+    if (order.lender.toString() !== req.user.id) {
+      return res
+        .status(403)
+        .json({ message: "Not authorized to update this order" });
     }
 
     // Handle status transitions
