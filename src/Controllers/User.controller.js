@@ -241,5 +241,43 @@ const logoutUser = (req, res) => {
   res.status(200).json({ success: true, message: "Logged out successfully." });
 };
 
+// ------------------ UPLOAD PROFILE IMAGE -------------------
+
+const uploadProfileImage = async (req, res) => {
+  try {
+    // 1. Check if a file exists
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        message: "No file uploaded. Please select an image.",
+      });
+    }
+
+    // 2. Upload to Cloudinary (using your wrapper function)
+    const result = await uploadToCloudinary(req.file.buffer, "udharo_profiles");
+
+    // 3. Update the database
+    const updatedUser = await User.findByIdAndUpdate(
+      req.user._id,
+      { profileImage: result.secure_url },
+      { new: true }, // Returns the newly updated document
+    ).select("-password"); // Hide password from response
+
+    // 4. Send ONE success response
+    return res.status(200).json({
+      success: true,
+      message: "Profile image uploaded successfully.",
+      user: updatedUser,
+    });
+  } catch (error) {
+    // 5. Send ONE error response if anything fails
+    console.error("Upload Profile Image Error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Server error during profile image upload.",
+    });
+  }
+};
+
 // ------------------ EXPORTS -------------------
-export { refreshToken, logoutUser, Signup, Login };
+export { refreshToken, logoutUser, Signup, Login, uploadProfileImage };
