@@ -164,7 +164,7 @@ const getAllProducts = asyncHandler(async (req, res) => {
     .sort(sort)
     .skip((page - 1) * limit)
     .limit(parseInt(limit))
-    .populate("owner", "name storeAddress");
+    .populate("owner", "name storeAddress profileImage pricePerDay");
 
   res.status(200).json({
     success: true,
@@ -180,7 +180,7 @@ const getSingleProduct = asyncHandler(async (req, res) => {
 
   const product = await Product.findById(productId).populate(
     "owner",
-    "name storeAddress",
+    "name storeAddress profileImage pricePerDay role stock isAvailable ",
   );
 
   if (!product) {

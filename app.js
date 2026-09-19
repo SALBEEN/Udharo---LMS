@@ -19,8 +19,14 @@ app.use(express.json());
 // ======================================================
 // setup all route and internal api
 import userRoutes from "./src/Routes/User.route.js";
+import productRoutes from "./src/Routes/Product.route.js";
+import orderRoutes from "./src/Routes/Order.route.js";
 
 app.use("/api/v1/user", userRoutes);
+app.use("/api/v1/product", productRoutes);
+app.use("/api/v1/order", orderRoutes);
+
+// ======================================================
 
 // ======================================================
 
