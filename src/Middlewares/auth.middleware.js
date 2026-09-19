@@ -1,5 +1,6 @@
 import jwt from "jsonwebtoken";
 import User from "../Schemas/User.schema.js";
+import { asyncHandler } from "../Utilities/AsyncHandler.utilities.js";
 
 const verifyJWT = asyncHandler(async (req, _, next) => {
   try {
