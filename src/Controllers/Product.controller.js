@@ -88,6 +88,8 @@ import { asyncHandler } from "../Utilities/AsyncHandler.utilities.js";
 import User from "../Schemas/User.schema.js";
 
 // ----------------- Controller Functions -----------------
+
+// ----------------- Create Product -----------------
 const createProduct = asyncHandler(async (req, res) => {
   const { name, description, pricePerDay, category, damageFund, stock } =
     req.body;
@@ -143,7 +145,7 @@ const createProduct = asyncHandler(async (req, res) => {
   });
 });
 
-export { createProduct };
+// ----------------- Get All Products -----------------
 
 const getAllProducts = asyncHandler(async (req, res) => {
   const { category, sortByPrice, page = 1, limit = 20 } = req.query;
@@ -171,4 +173,125 @@ const getAllProducts = asyncHandler(async (req, res) => {
   });
 });
 
-export { getAllProducts };
+// ----------------- Get Single Product -----------------
+
+const getSingleProduct = asyncHandler(async (req, res) => {
+  const { productId } = req.params;
+
+  const product = await Product.findById(productId).populate(
+    "owner",
+    "name storeAddress",
+  );
+
+  if (!product) {
+    return res.status(404).json({
+      success: false,
+      message: "Product not found.",
+    });
+  }
+
+  res.status(200).json({
+    success: true,
+    message: "Product fetched successfully.",
+    product,
+  });
+});
+
+// ----------------- Update Product -----------------
+
+const updateProduct = asyncHandler(async (req, res) => {
+  const { productId } = req.params;
+  const updates = req.body;
+
+  const product = await Product.findById(productId);
+
+  if (!product) {
+    return res.status(404).json({
+      success: false,
+      message: "Product not found.",
+    });
+  }
+
+  // Check if the logged-in user is the owner of the product
+  if (product.owner.toString() !== req.user._id.toString()) {
+    return res.status(403).json({
+      success: false,
+      message: "You are not authorized to update this product.",
+    });
+  }
+
+  Object.assign(product, updates);
+  await product.save();
+
+  res.status(200).json({
+    success: true,
+    message: "Product updated successfully.",
+    product,
+  });
+});
+
+// ----------------- Toggle Availability -----------------
+
+const toggleAvailability = asyncHandler(async (req, res) => {
+  const { productId } = req.params;
+
+  const product = await Product.findById(productId);
+
+  if (!product) {
+    return res.status(404).json({
+      success: false,
+      message: "Product not found.",
+    });
+  }
+
+  // Check if the logged-in user is the owner of the product
+  if (product.owner.toString() !== req.user._id.toString()) {
+    return res.status(403).json({
+      success: false,
+      message: "You are not authorized to update this product.",
+    });
+  }
+
+  product.isAvailable = !product.isAvailable;
+  await product.save();
+
+  res.status(200).json({
+    success: true,
+    message: `Product availability toggled to ${product.isAvailable}.`,
+    product,
+  });
+});
+
+// ----------------- Delete Product -----------------
+
+const deleteProduct = asyncHandler(async (req, res) => {
+  const { productId } = req.params;
+
+  const product = await Product.findById(productId);
+
+  if (!product) {
+    return res.status(404).json({
+      success: false,
+      message: "Product not found.",
+    });
+  }
+
+  // Check if the logged-in user is the owner of the product
+  if (product.owner.toString() !== req.user._id.toString()) {
+    return res.status(403).json({
+      success: false,
+      message: "You are not authorized to delete this product.",
+    });
+  }
+
+  await product.remove();
+
+  res.status(200).json({
+    success: true,
+    message: "Product deleted successfully.",
+  });
+});
+
+// ----------------- Export Controller Functions -----------------
+
+export { createProduct, getAllProducts };
