@@ -218,6 +218,63 @@ const updateOrderStatus = async (req, res) => {
   }
 };
 
+const getLenderStats = async (req, res) => {
+  try {
+    // 1. Get the target lender's ID from the URL (e.g., /api/orders/stats/64f1a2b...)
+    const targetLenderId = req.params.lenderId;
+
+    // 2. Check who is making the request (using the protect middleware)
+    // If the logged-in user's ID matches the target ID, they are the owner.
+    const isOwner = req.user && req.user.id === targetLenderId;
+
+    // 3. Perform the aggregation for completed orders
+    const stats = await Order.aggregate([
+      {
+        $match: {
+          lender: new mongoose.Types.ObjectId(targetLenderId),
+          status: "Completed",
+        },
+      },
+      {
+        $group: {
+          _id: null,
+          totalSuccessfulRentals: { $sum: 1 },
+          totalGrossRevenue: { $sum: "$totalCost" },
+        },
+      },
+    ]);
+
+    // 4. Default baseline if they have no completed orders yet
+    let responseData = { totalRentals: 0 };
+
+    if (stats.length > 0) {
+      responseData.totalRentals = stats[0].totalSuccessfulRentals;
+
+      // 5. Privacy Check: Only attach revenue if the requester is the Lender themselves
+      if (isOwner) {
+        responseData.totalRevenue = stats[0].totalGrossRevenue;
+      }
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Lender statistics fetched successfully",
+      data: responseData,
+    });
+  } catch (error) {
+    console.error("Lender Stats Error:", error);
+    res
+      .status(500)
+      .json({ success: false, message: "Server error calculating stats" });
+  }
+};
+
 // EXPORT CONTROLLER FUNCTIONS
 
-export { createOrder, getIncomingOrders, getMyRentals, updateOrderStatus };
+export {
+  getLenderStats,
+  createOrder,
+  getIncomingOrders,
+  getMyRentals,
+  updateOrderStatus,
+};
