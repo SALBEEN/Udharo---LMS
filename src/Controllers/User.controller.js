@@ -1,49 +1,26 @@
 // ----------------- IMPORTS -------------------
 import User from "../Schemas/User.schema.js";
-import admin from "firebase-admin";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 
-// ----------------- LOGOUT -------------------
+// ----------------- SIGNUP -------------------
 
 const Signup = async (req, res) => {
-  const { idToken, name, password, role, lenderAddress, storeAddress } =
-    req.body;
+  const {
+    name,
+    email,
+    password,
+    phoneNumber,
+    role,
+    lenderAddress,
+    storeAddress,
+  } = req.body;
 
-  if (!idToken) {
-    return res
-      .status(401)
-      .json({ success: false, message: "Missing Firebase ID Token." });
-  }
-  // ======================================
-
-  // only for testing purpose, if the idToken is "test-token", we will use a
-  //  standard test number instead of verifying with Firebase
-  //  Admin SDK. This is useful for testing with Postman or other
-  // tools without needing to generate a real Firebase ID token.
-  let verifiedPhoneNumber;
-
-  if (idToken === "test-token") {
-    console.log("⚠️ Using Postman Test Token");
-    verifiedPhoneNumber = "+9779800000000"; // Standard test number
-  }
-  // --- REAL FIREBASE VERIFICATION ---
-  else {
-    const decodedToken = await admin.auth().verifyIdToken(idToken);
-    verifiedPhoneNumber = decodedToken.phone_number;
-  }
-  // ======================================
-
-  // verift the ID token using Firebase Admin SDK
-  //   const decodedToken = await admin.auth().verifyIdToken(idToken);
-  //   const verifiedPhoneNumber = decodedToken.phone_number;
-
-  /// check the input field
-
-  if (!name || !password || !role) {
+  // 1. Check required input fields
+  if (!name || !email || !password || !phoneNumber || !role) {
     return res.status(400).json({
       success: false,
-      message: "Name, phoneNumber, password, and role are required.",
+      message: "Name, email, password, phoneNumber, and role are required.",
     });
   }
 
@@ -54,141 +31,164 @@ const Signup = async (req, res) => {
     });
   }
 
-  if (role === "lender") {
-    if (!storeAddress) {
-      return res.status(400).json({
-        success: false,
-        message: "Store address is required for lenders.",
-      });
-    }
+  if (role === "lender" && !storeAddress) {
+    return res.status(400).json({
+      success: false,
+      message: "Store address is required for lenders.",
+    });
   }
 
-  if (role === "renter") {
-    if (!lenderAddress) {
-      return res.status(400).json({
-        success: false,
-        message: "Lender address is required for renters.",
-      });
-    }
+  if (role === "renter" && !lenderAddress) {
+    return res.status(400).json({
+      success: false,
+      message: "Lender address is required for renters.",
+    });
   }
 
-  // hashing the password and phone number before saving to the database
-  const hashedPassword = await bcrypt.hash(password, 10);
-  const hashedPhoneNumber = await bcrypt.hash(verifiedPhoneNumber, 10);
+  try {
+    // 2. Check if user already exists (using plain email or hashing if you prefer)
+    // Note: If you hash emails before saving, you'll want to check existence carefully.
+    // For standard lookup, storing a hashed email or lowercase email works best.
+    const existingUser = await User.findOne({ email });
+    if (existingUser) {
+      return res.status(400).json({
+        success: false,
+        message: "User with this email already exists.",
+      });
+    }
 
-  // save the user to the databa
+    // 3. Hashing sensitive data (password and phone number)
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const hashedPhoneNumber = await bcrypt.hash(phoneNumber, 10);
 
-  const user = new User({
-    name,
-    phoneNumber: hashedPhoneNumber,
-    password: hashedPassword,
-    role,
-    lenderAddress: role === "lender" ? lenderAddress : undefined,
-    storeAddress: role === "lender" ? storeAddress : undefined,
-  });
+    // 4. Save the user to the database
+    const user = new User({
+      name,
+      email,
+      phoneNumber: hashedPhoneNumber,
+      password: hashedPassword,
+      role,
+      lenderAddress: role === "renter" ? lenderAddress : undefined,
+      storeAddress: role === "lender" ? storeAddress : undefined,
+    });
 
-  await user.save();
+    await user.save();
 
-  const token = jwt.sign(
-    { id: user._id, role: user.role, phoneNumber: user.phoneNumber },
-    process.env.JWT_SECRET,
-    {
-      expiresIn: process.env.JWT_EXPIRE_IN,
-    },
-  );
+    // 5. Generate JWT Token
+    const token = jwt.sign(
+      { id: user._id, role: user.role, email: user.email },
+      process.env.JWT_SECRET,
+      {
+        expiresIn: process.env.JWT_EXPIRE_IN,
+      },
+    );
 
-  // send response
-  res.status(200).json({
-    _id: user._id,
-    name: user.name,
-    role: user.role,
-    createdAt: user.createdAt,
-    updatedAt: user.updatedAt,
-    success: true,
-    message: "User registered successfully.",
-    token: token,
-  });
+    // 6. Send response
+    return res.status(201).json({
+      _id: user._id,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      createdAt: user.createdAt,
+      updatedAt: user.updatedAt,
+      success: true,
+      message: "User registered successfully.",
+      token: token,
+    });
+  } catch (error) {
+    console.error("Signup Error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Server error during registration.",
+    });
+  }
 };
 
 // --------------- LOGIN -------------------
 
 const Login = async (req, res) => {
-  const { phoneNumber, password } = req.body;
+  const { email, password } = req.body;
 
-  if (!phoneNumber || !password) {
+  if (!email || !password) {
     return res.status(400).json({
       success: false,
-      message: "Phone number and password are required.",
+      message: "Email and password are required.",
     });
   }
 
-  // find the user by phone number
-  const user = await User.findOne({ phoneNumber });
+  try {
+    // 1. Find the user by email
+    const user = await User.findOne({ email });
 
-  if (!user) {
-    return res.status(404).json({
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found.",
+      });
+    }
+
+    // 2. Compare the password
+    const isPasswordValid = await bcrypt.compare(password, user.password);
+
+    if (!isPasswordValid) {
+      return res.status(401).json({
+        success: false,
+        message: "Invalid password.",
+      });
+    }
+
+    // 3. Generate JWT tokens
+    const accessToken = jwt.sign(
+      { id: user._id, role: user.role, email: user.email },
+      process.env.JWT_SECRET,
+      {
+        expiresIn: process.env.JWT_EXPIRE_IN,
+      },
+    );
+
+    const refreshToken = jwt.sign(
+      { id: user._id, role: user.role, email: user.email },
+      process.env.JWT_REFRESH_SECRET,
+      {
+        expiresIn: process.env.JWT_REFRESH_EXPIRE_IN,
+      },
+    );
+
+    // 4. Set the refresh token in the cookie
+    res.cookie("refreshToken", refreshToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production", // set to true in production
+      sameSite: "strict",
+      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+    });
+
+    // 5. Send response
+    return res.status(200).json({
+      _id: user._id,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      createdAt: user.createdAt,
+      updatedAt: user.updatedAt,
+      success: true,
+      accessToken: accessToken,
+      message: "User logged in successfully.",
+    });
+  } catch (error) {
+    console.error("Login Error:", error);
+    return res.status(500).json({
       success: false,
-      message: "User not found.",
+      message: "Server error during login.",
     });
   }
-
-  // compare the password
-  const isPasswordValid = await bcrypt.compare(password, user.password);
-
-  if (!isPasswordValid) {
-    return res.status(401).json({
-      success: false,
-      message: "Invalid password.",
-    });
-  }
-
-  // generate JWT token
-
-  const accessToken = jwt.sign(
-    { id: user._id, role: user.role, phoneNumber: user.phoneNumber },
-    process.env.JWT_SECRET,
-    {
-      expiresIn: process.env.JWT_EXPIRE_IN,
-    },
-  );
-
-  const refreshToken = jwt.sign(
-    { id: user._id, role: user.role, phoneNumber: user.phoneNumber },
-    process.env.JWT_REFRESH_SECRET,
-    {
-      expiresIn: process.env.JWT_REFRESH_EXPIRE_IN,
-    },
-  );
-
-  // set the refresh token in the cookie
-  res.cookie("refreshToken", refreshToken, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production", // set to true in production
-    sameSite: "strict",
-    maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
-  });
-
-  // send response
-  res.status(200).json({
-    _id: user._id,
-    name: user.name,
-    role: user.role,
-    createdAt: user.createdAt,
-    updatedAt: user.updatedAt,
-    success: true,
-    accessToken: accessToken,
-    message: "User logged in successfully.",
-  });
 };
 
 // ----------------- REFRESH TOKEN -------------------
 
 const refreshToken = async (req, res) => {
   try {
-    // 1. Grab the refresh token from the HttpOnly cookie
     const token = req.cookies.refreshToken;
 
-    // 2. If no token exists, they are completely logged out
     if (!token) {
       return res.status(401).json({
         success: false,
@@ -196,33 +196,28 @@ const refreshToken = async (req, res) => {
       });
     }
 
-    // 3. Verify the refresh token
     jwt.verify(token, process.env.JWT_REFRESH_SECRET, (err, decoded) => {
       if (err) {
-        // Token is expired or tampered with
         return res.status(403).json({
           success: false,
           message: "Invalid or expired refresh token. Please log in again.",
         });
       }
 
-      // 4. Token is valid! Issue a new short-lived Access Token
-      // 'decoded' contains the payload you signed during login (e.g., userId)
       const newAccessToken = jwt.sign(
-        { userId: decoded.userId, role: decoded.role },
+        { id: decoded.id, role: decoded.role, email: decoded.email },
         process.env.JWT_SECRET,
         { expiresIn: "15m" },
       );
 
-      // 5. Send the new access token back to the frontend
-      res.status(200).json({
+      return res.status(200).json({
         success: true,
         accessToken: newAccessToken,
       });
     });
   } catch (error) {
     console.error("Refresh Error:", error);
-    res
+    return res
       .status(500)
       .json({ success: false, message: "Server error during token refresh." });
   }
@@ -231,21 +226,21 @@ const refreshToken = async (req, res) => {
 // ------------------- LOG OUT ------------------
 
 const logoutUser = (req, res) => {
-  // Clear the HttpOnly cookie
   res.clearCookie("refreshToken", {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
     sameSite: "strict",
   });
 
-  res.status(200).json({ success: true, message: "Logged out successfully." });
+  return res
+    .status(200)
+    .json({ success: true, message: "Logged out successfully." });
 };
 
 // ------------------ UPLOAD PROFILE IMAGE -------------------
 
 const uploadProfileImage = async (req, res) => {
   try {
-    // 1. Check if a file exists
     if (!req.file) {
       return res.status(400).json({
         success: false,
@@ -253,24 +248,20 @@ const uploadProfileImage = async (req, res) => {
       });
     }
 
-    // 2. Upload to Cloudinary (using your wrapper function)
     const result = await uploadToCloudinary(req.file.buffer, "udharo_profiles");
 
-    // 3. Update the database
     const updatedUser = await User.findByIdAndUpdate(
       req.user._id,
       { profileImage: result.secure_url },
-      { new: true }, // Returns the newly updated document
-    ).select("-password"); // Hide password from response
+      { new: true },
+    ).select("-password");
 
-    // 4. Send ONE success response
     return res.status(200).json({
       success: true,
       message: "Profile image uploaded successfully.",
       user: updatedUser,
     });
   } catch (error) {
-    // 5. Send ONE error response if anything fails
     console.error("Upload Profile Image Error:", error);
     return res.status(500).json({
       success: false,

@@ -1,6 +1,14 @@
 import express from "express";
+import cors from "cors";
 
 const app = express();
+
+app.use(
+  cors({
+    origin: "http://localhost:5173", // Allow your Vite frontend
+    credentials: true, // Allow cookies/authorization headers if needed
+  }),
+);
 
 app.use(express.json());
 

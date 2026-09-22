@@ -1,5 +1,5 @@
 // config/cloudinary.js
-import { V2 as cloudinary } from "cloudinary";
+import { v2 as cloudinary } from "cloudinary";
 import multer from "multer";
 
 // 1. Configure Cloudinary with your .env credentials
