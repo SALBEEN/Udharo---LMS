@@ -2,6 +2,7 @@
 import User from "../Schemas/User.schema.js";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
+import sendEmail from "../Utilities/sendEmail.utilities.js";
 
 // ----------------- SIGNUP -------------------
 
@@ -16,53 +17,42 @@ const Signup = async (req, res) => {
     storeAddress,
   } = req.body;
 
-  // 1. Check required input fields
   if (!name || !email || !password || !phoneNumber || !role) {
-    return res.status(400).json({
-      success: false,
-      message: "Name, email, password, phoneNumber, and role are required.",
-    });
+    return res
+      .status(400)
+      .json({ success: false, message: "All required fields must be filled." });
   }
 
-  if (role !== "lender" && role !== "renter") {
-    return res.status(400).json({
-      success: false,
-      message: 'Role must be either "lender" or "renter".',
-    });
-  }
-
-  if (role === "lender" && !storeAddress) {
-    return res.status(400).json({
-      success: false,
-      message: "Store address is required for lenders.",
-    });
-  }
-
-  if (role === "renter" && !lenderAddress) {
-    return res.status(400).json({
-      success: false,
-      message: "Lender address is required for renters.",
-    });
-  }
+  await sendEmail(
+    email,
+    "Udharo LMS - Verify Your Account",
+    `Welcome to Udharo! Your verification code is: ${otp}\n\nThis code expires in 10 minutes.`,
+  );
+  console.log(`🔑 Verification OTP for ${email}: ${otp}`);
 
   try {
-    // 2. Check if user already exists (using plain email or hashing if you prefer)
-    // Note: If you hash emails before saving, you'll want to check existence carefully.
-    // For standard lookup, storing a hashed email or lowercase email works best.
     const existingUser = await User.findOne({ email });
     if (existingUser) {
-      return res.status(400).json({
-        success: false,
-        message: "User with this email already exists.",
-      });
+      if (existingUser.isEmailVerified) {
+        return res.status(400).json({
+          success: false,
+          message: "User with this email already exists.",
+        });
+      }
+      // If user exists but is unverified, we can overwrite/update their pending registration details
+      await User.deleteOne({ email });
     }
 
-    // 3. Hashing sensitive data (password and phone number)
+    // Hash data
     const hashedPassword = await bcrypt.hash(password, 10);
     const hashedPhoneNumber = await bcrypt.hash(phoneNumber, 10);
 
-    // 4. Save the user to the database
-    const user = new User({
+    // Generate 6-digit OTP code & 10-minute expiry
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const emailOtpExpiresAt = Date.now() + 10 * 60 * 1000;
+
+    // Save user as unverified
+    const newUser = new User({
       name,
       email,
       phoneNumber: hashedPhoneNumber,
@@ -70,37 +60,98 @@ const Signup = async (req, res) => {
       role,
       lenderAddress: role === "renter" ? lenderAddress : undefined,
       storeAddress: role === "lender" ? storeAddress : undefined,
+      isEmailVerified: false,
+      emailOtp: otp,
+      emailOtpExpiresAt,
     });
 
-    await user.save();
+    await newUser.save();
 
-    // 5. Generate JWT Token
-    const token = jwt.sign(
-      { id: user._id, role: user.role, email: user.email },
-      process.env.JWT_SECRET,
-      {
-        expiresIn: process.env.JWT_EXPIRE_IN,
-      },
-    );
+    // TODO: Send code via Nodemailer
+    // await sendEmail(email, "Udharo LMS Verification Code", `Your verification code is: ${otp}`);
+    console.log(`🔑 Verification OTP for ${email}: ${otp}`); // For backend console testing
 
-    // 6. Send response
-    return res.status(201).json({
-      _id: user._id,
-      name: user.name,
-      email: user.email,
-      role: user.role,
-      createdAt: user.createdAt,
-      updatedAt: user.updatedAt,
+    return res.status(200).json({
       success: true,
-      message: "User registered successfully.",
-      token: token,
+      message:
+        "Registration initiated! Please check your email for the verification code.",
     });
   } catch (error) {
     console.error("Signup Error:", error);
-    return res.status(500).json({
-      success: false,
-      message: "Server error during registration.",
+    return res
+      .status(500)
+      .json({ success: false, message: "Server error during registration." });
+  }
+};
+
+// ----------------- STEP 2: VERIFY OTP & FLAG EMAIL -------------------
+const VerifyEmailOtp = async (req, res) => {
+  const { email, otp } = req.body;
+
+  if (!email || !otp) {
+    return res
+      .status(400)
+      .json({ success: false, message: "Email and OTP code are required." });
+  }
+
+  try {
+    const user = await User.findOne({ email });
+
+    if (!user) {
+      return res
+        .status(404)
+        .json({ success: false, message: "User not found." });
+    }
+
+    if (user.isEmailVerified) {
+      return res.status(400).json({
+        success: false,
+        message: "Email is already verified. Please login.",
+      });
+    }
+
+    if (!user.emailOtp || user.emailOtp !== otp) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid verification code." });
+    }
+
+    if (Date.now() > user.emailOtpExpiresAt) {
+      return res.status(400).json({
+        success: false,
+        message: "Verification code has expired. Please sign up again.",
+      });
+    }
+
+    // Flag email as verified and clear OTP fields
+    user.isEmailVerified = true;
+    user.emailOtp = undefined;
+    user.emailOtpExpiresAt = undefined;
+    await user.save();
+
+    // Generate login token upon successful verification
+    const token = jwt.sign(
+      { id: user._id, role: user.role, email: user.email },
+      process.env.JWT_SECRET,
+      { expiresIn: process.env.JWT_EXPIRE_IN },
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: "Email verified successfully!",
+      token,
+      user: {
+        _id: user._id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+      },
     });
+  } catch (error) {
+    console.error("Verify OTP Error:", error);
+    return res
+      .status(500)
+      .json({ success: false, message: "Server error during verification." });
   }
 };
 
@@ -164,14 +215,14 @@ const Login = async (req, res) => {
 
     // 5. Send response
     return res.status(200).json({
-      _id: user._id,
-      name: user.name,
-      email: user.email,
-      role: user.role,
-      createdAt: user.createdAt,
-      updatedAt: user.updatedAt,
       success: true,
-      accessToken: accessToken,
+      token: accessToken,
+      user: {
+        _id: user._id,
+        name: user.name,
+        email: user.email,
+        role: user.role, // <--- Make sure this is explicitly being sent!
+      },
       message: "User logged in successfully.",
     });
   } catch (error) {
@@ -270,5 +321,104 @@ const uploadProfileImage = async (req, res) => {
   }
 };
 
+const requestPasswordReset = async (req, res) => {
+  const { email } = req.body;
+
+  if (!email) {
+    return res
+      .status(400)
+      .json({ success: false, message: "Email is required." });
+  }
+
+  try {
+    const user = await User.findOne({ email });
+    if (!user) {
+      return res
+        .status(404)
+        .json({ success: false, message: "User not found." });
+    }
+
+    // Generate 6-digit OTP & 10-minute expiry (reusing the email verification fields)
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    user.emailOtp = otp;
+    user.emailOtpExpiresAt = Date.now() + 10 * 60 * 1000;
+
+    await user.save();
+
+    await sendEmail(
+      email,
+      "Udharo LMS - Password Reset Code",
+      `You requested a password reset. Your OTP code is: ${otp}\n\nIf you did not request this, please ignore this email.`,
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: "Password reset OTP sent to your email.",
+    });
+  } catch (error) {
+    console.error("Request Password Reset Error:", error);
+    return res
+      .status(500)
+      .json({ success: false, message: "Server error sending reset code." });
+  }
+};
+
+const resetPassword = async (req, res) => {
+  const { email, otp, newPassword } = req.body;
+
+  if (!email || !otp || !newPassword) {
+    return res
+      .status(400)
+      .json({ success: false, message: "All fields are required." });
+  }
+
+  try {
+    const user = await User.findOne({ email });
+    if (!user) {
+      return res
+        .status(404)
+        .json({ success: false, message: "User not found." });
+    }
+
+    if (!user.emailOtp || user.emailOtp !== otp) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid reset code." });
+    }
+
+    if (Date.now() > user.emailOtpExpiresAt) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Reset code has expired." });
+    }
+
+    // Hash new password and clear OTP fields
+    user.password = await bcrypt.hash(newPassword, 10);
+    user.emailOtp = undefined;
+    user.emailOtpExpiresAt = undefined;
+
+    await user.save();
+
+    return res
+      .status(200)
+      .json({
+        success: true,
+        message: "Password reset successfully! You can now log in.",
+      });
+  } catch (error) {
+    console.error("Reset Password Error:", error);
+    return res
+      .status(500)
+      .json({ success: false, message: "Server error resetting password." });
+  }
+};
+
 // ------------------ EXPORTS -------------------
-export { refreshToken, logoutUser, Signup, Login, uploadProfileImage };
+export {
+  refreshToken,
+  logoutUser,
+  Signup,
+  Login,
+  uploadProfileImage,
+  VerifyEmailOtp,
+};

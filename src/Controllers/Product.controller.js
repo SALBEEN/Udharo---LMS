@@ -86,13 +86,28 @@ import Product from "../Schemas/Product.schema.js";
 import { cloudinary } from "../Middlewares/cloudinary.middleware.js";
 import { asyncHandler } from "../Utilities/AsyncHandler.utilities.js";
 import User from "../Schemas/User.schema.js";
+import dotenv from "dotenv";
+dotenv.config();
 
 // ----------------- Controller Functions -----------------
 
 // ----------------- Create Product -----------------
 const createProduct = asyncHandler(async (req, res) => {
+  console.log("Incoming data:", req.body);
   const { name, description, pricePerDay, category, damageFund, stock } =
     req.body;
+
+  // Handle image upload to Cloudinary
+  let imageUrl = "";
+  if (req.file) {
+    const result = await cloudinary.uploader.upload(req.file.path);
+    imageUrl = result.secure_url;
+  } else {
+    return res.status(400).json({
+      success: false,
+      message: "Product image is required.",
+    });
+  }
 
   // Validate required fields
   if (!name || !description || !pricePerDay || !category || !damageFund) {
@@ -109,18 +124,6 @@ const createProduct = asyncHandler(async (req, res) => {
     return res.status(403).json({
       success: false,
       message: "Only lenders can create products.",
-    });
-  }
-
-  // Handle image upload to Cloudinary
-  let imageUrl = "";
-  if (req.file) {
-    const result = await cloudinary.uploader.upload(req.file.path);
-    imageUrl = result.secure_url;
-  } else {
-    return res.status(400).json({
-      success: false,
-      message: "Product image is required.",
     });
   }
 
@@ -176,9 +179,9 @@ const getAllProducts = asyncHandler(async (req, res) => {
 // ----------------- Get Single Product -----------------
 
 const getSingleProduct = asyncHandler(async (req, res) => {
-  const { productId } = req.params;
+  const { id } = req.params;
 
-  const product = await Product.findById(productId).populate(
+  const product = await Product.findById(id).populate(
     "owner",
     "name storeAddress profileImage pricePerDay role stock isAvailable ",
   );
@@ -194,22 +197,21 @@ const getSingleProduct = asyncHandler(async (req, res) => {
     success: true,
     message: "Product fetched successfully.",
     product,
-  });
+  }); 
 });
 
 // ----------------- Update Product -----------------
 
 const updateProduct = asyncHandler(async (req, res) => {
-  const { productId } = req.params;
+  const { id } = req.params; // FIX: Changed from productId to id to match route
   const updates = req.body;
 
-  const product = await Product.findById(productId);
+  const product = await Product.findById(id);
 
   if (!product) {
-    return res.status(404).json({
-      success: false,
-      message: "Product not found.",
-    });
+    return res
+      .status(404)
+      .json({ success: false, message: "Product not found." });
   }
 
   // Check if the logged-in user is the owner of the product
@@ -220,6 +222,15 @@ const updateProduct = asyncHandler(async (req, res) => {
     });
   }
 
+  // FIX: Handle new image upload if the lender attaches a new photo
+  if (req.file) {
+    const result = await cloudinary.uploader.upload(req.file.path, {
+      folder: "udharo_products",
+    });
+    updates.imageUrl = result.secure_url;
+  }
+
+  // Apply updates and save (This also triggers your stock/availability hook!)
   Object.assign(product, updates);
   await product.save();
 
@@ -230,12 +241,26 @@ const updateProduct = asyncHandler(async (req, res) => {
   });
 });
 
+// -------- getAllMyProduct ----------------------
+
+const getMyProducts = asyncHandler(async (req, res) => {
+  // Find products where owner matches the logged-in user, sorted newest first
+  const products = await Product.find({ owner: req.user._id }).sort({
+    createdAt: -1,
+  });
+
+  res.status(200).json({
+    success: true,
+    products,
+  });
+});
+
 // ----------------- Toggle Availability -----------------
 
 const toggleAvailability = asyncHandler(async (req, res) => {
-  const { productId } = req.params;
+  const { id } = req.params;
 
-  const product = await Product.findById(productId);
+  const product = await Product.findById(id);
 
   if (!product) {
     return res.status(404).json({
@@ -265,9 +290,9 @@ const toggleAvailability = asyncHandler(async (req, res) => {
 // ----------------- Delete Product -----------------
 
 const deleteProduct = asyncHandler(async (req, res) => {
-  const { productId } = req.params;
+  const { id } = req.params;
 
-  const product = await Product.findById(productId);
+  const product = await Product.findById(id);
 
   if (!product) {
     return res.status(404).json({
@@ -301,4 +326,5 @@ export {
   updateProduct,
   toggleAvailability,
   deleteProduct,
+  getMyProducts,
 };

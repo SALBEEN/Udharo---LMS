@@ -1,25 +1,40 @@
-// config/cloudinary.js
+import dotenv from "dotenv";
+dotenv.config(); // Force env variables to load instantly
+
 import { v2 as cloudinary } from "cloudinary";
 import multer from "multer";
+import fs from "fs";
 
-// 1. Configure Cloudinary with your .env credentials
+console.log("🔍 Checking API Key:", process.env.CLOUDINARY_API_KEY);
+
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
   api_key: process.env.CLOUDINARY_API_KEY,
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
-// 2. Configure Multer to hold the file in Memory (RAM)
-const storage = multer.memoryStorage();
+const uploadDir = "uploads/";
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir, { recursive: true });
+}
 
-// 3. Set file filters and size limits
+// FIX 1: Change to disk storage so Cloudinary can find the file path!
+// (Make sure you create an empty folder named 'uploads' in your backend directory)
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, "uploads/");
+  },
+  filename: function (req, file, cb) {
+    cb(null, Date.now() + "-" + file.originalname);
+  },
+});
+
 const upload = multer({
   storage: storage,
   limits: {
     fileSize: 5 * 1024 * 1024, // 5MB limit
   },
   fileFilter: (req, file, cb) => {
-    // Only accept image files
     if (file.mimetype.startsWith("image/")) {
       cb(null, true);
     } else {
