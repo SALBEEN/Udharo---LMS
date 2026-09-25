@@ -62,61 +62,58 @@ import { v2 as cloudinary } from "cloudinary";
 
 const createOrder = async (req, res) => {
   try {
-    const { productId, rentalStartDate, rentalEndDate } = req.body;
-    const renterId = req.user._id; // Assuming user ID is available in the request
+    const { productId, rentalStartDate, rentalEndDate, quantity } = req.body;
+    const renterId = req.user._id;
 
-    // Validate required fields
     if (!productId || !rentalStartDate || !rentalEndDate) {
       return res.status(400).json({ message: "Missing required fields" });
     }
 
-    // Fetch product details
     const product = await Product.findById(productId);
-    if (!product) {
-      return res.status(404).json({ message: "Product not found" });
-    }
+    if (!product) return res.status(404).json({ message: "Product not found" });
 
-    // Check stock availability
-    if (product.stock <= 0) {
+    const reqQuantity = quantity || 1;
+    if (product.stock < reqQuantity) {
       return res.status(400).json({ message: "Product is out of stock" });
     }
 
-    // Calculate total cost
     let rentalDays = Math.ceil(
       (new Date(rentalEndDate) - new Date(rentalStartDate)) /
         (1000 * 60 * 60 * 24),
     );
-    if (rentalDays === 0) rentalDays = 1; // Same-day rental counts as 1 day
-    const totalCost = rentalDays * product.pricePerDay + product.damageFund;
+    if (rentalDays === 0) rentalDays = 1;
 
-    // Create order
+    // NEW: Calculate specific cost splits
+    const rentalCost = rentalDays * product.pricePerDay * reqQuantity;
+    const securityDeposit = product.damageFund * reqQuantity;
+    const totalCost = rentalCost + securityDeposit;
+
     const order = new Order({
       product: productId,
       renter: renterId,
-      lender: product.owner, // Assuming the product has a lender field
+      lender: product.owner,
       rentalStartDate,
       rentalEndDate,
+      rentalCost, // Saved to DB
+      securityDeposit, // Saved to DB
       totalCost,
       status: "Pending",
     });
 
     await order.save();
-
     res.status(201).json({ message: "Order created successfully", order });
   } catch (error) {
-    console.error(error);
     res.status(500).json({ message: "Server error" });
   }
 };
 
 const getIncomingOrders = async (req, res) => {
   try {
-    const lenderId = req.user._id; // Assuming user ID is available in the request
-
-    // Fetch orders where the logged-in user is the lender
-    const orders = await Order.find({ lender: lenderId }).sort({
-      createdAt: -1, // Sort by creation date (newest first)
-    });
+    const lenderId = req.user._id;
+    const orders = await Order.find({ lender: lenderId })
+      .populate("product", "name imageUrl")
+      .populate("renter", "name phoneNumber") // Fetches Renter's phone number
+      .sort({ createdAt: -1 });
 
     res.status(200).json({ message: "Incoming orders fetched", orders });
   } catch (error) {
@@ -127,12 +124,10 @@ const getIncomingOrders = async (req, res) => {
 
 const getMyRentals = async (req, res) => {
   try {
-    const renterId = req.user._id; // Assuming user ID is available in the request
-
-    // Fetch orders where the logged-in user is the renter
+    const renterId = req.user._id;
     const rentals = await Order.find({ renter: renterId })
-      .populate("product", "name imageUrl") // Populate product details
-      .populate("lender", "storeAddress"); // Populate lender details
+      .populate("product", "name imageUrl")
+      .populate("lender", "name storeAddress phoneNumber"); // Fetches Lender's phone number
 
     res.status(200).json({ message: "My rentals fetched", rentals });
   } catch (error) {
@@ -141,160 +136,246 @@ const getMyRentals = async (req, res) => {
   }
 };
 
-const updateOrderStatus = async (req, res) => {
-  try {
-    // 1. Extract the 'action' variable alongside newStatus
-    const { orderId, newStatus, action } = req.body;
-
-    if (!orderId) {
-      return res.status(400).json({ message: "Order ID is required" });
-    }
-
-    const order = await Order.findById(orderId);
-    if (!order) return res.status(404).json({ message: "Order not found" });
-
-    if (String(order.lender) !== String(req.user._id)) {
-      return res
-        .status(403)
-        .json({ message: "Not authorized to update this order" });
-    }
-
-    // 2. NEW: Handle standalone Payment Verification
-    if (action === "verify_payment") {
-      if (order.status === "Pending") {
-        return res.status(400).json({
-          message: "You must accept the order before verifying the payment.",
-        });
-      }
-      order.paymentStatus = "Completed";
-      await order.save({ validateModifiedOnly: true });
-      return res
-        .status(200)
-        .json({ message: "Payment verified successfully", order });
-    }
-
-    // 3. Handle standard status transitions
-    switch (newStatus) {
-      case "Active":
-        if (order.status !== "Pending") {
-          return res
-            .status(400)
-            .json({ message: "Order is no longer pending." });
-        }
-        const product = await Product.findById(order.product);
-        if (product.stock <= 0) {
-          return res.status(400).json({
-            message: "Product out of stock! Complete past returns first.",
-          });
-        }
-        product.stock -= 1;
-        if (product.stock === 0) product.isAvailable = false;
-        await product.save();
-
-        order.status = "Active";
-        // REMOVED: order.paymentStatus = "Completed"; (Payment is now handled separately!)
-        break;
-
-      case "Cancelled":
-        if (order.status !== "Pending") {
-          return res
-            .status(400)
-            .json({ message: "Only pending orders can be cancelled." });
-        }
-        order.status = "Cancelled";
-        break;
-
-      case "Completed":
-        if (order.status !== "Return Pending" && order.status !== "Active") {
-          return res
-            .status(400)
-            .json({ message: "Order must be returned by renter first." });
-        }
-        const completedProduct = await Product.findById(order.product);
-
-        const endD = new Date(order.rentalEndDate);
-        const actualD = new Date(order.actualReturnDate || new Date());
-        if (actualD < endD) {
-          const unusedTime = endD - actualD;
-          const unusedDays = Math.floor(unusedTime / (1000 * 60 * 60 * 24));
-          if (unusedDays > 0) {
-            const refundAmount = unusedDays * completedProduct.pricePerDay;
-            order.notes = `Early Return: Refund Renter Rs. ${refundAmount}`;
-            order.paymentStatus = "Refund Owed";
-          }
-        }
-
-        completedProduct.stock += 1;
-        if (completedProduct.stock > 0) completedProduct.isAvailable = true;
-        await completedProduct.save();
-
-        order.status = "Completed";
-        order.damageFundStatus = "Refunded";
-        break;
-
-      default:
-        return res.status(400).json({ message: "Invalid status transition" });
-    }
-
-    await order.save({ validateModifiedOnly: true });
-    res.status(200).json({ message: "Order status updated", order });
-  } catch (error) {
-    console.error("Status Update Error:", error);
-    if (error.name === "ValidationError") {
-      const messages = Object.values(error.errors).map((val) => val.message);
-      return res.status(400).json({ message: messages.join(", ") });
-    }
-    res.status(500).json({ message: "Server error updating status." });
-  }
-};
 const getLenderStats = async (req, res) => {
   try {
-    // 1. Get the target lender's ID from the URL (e.g., /api/orders/stats/64f1a2b...)
     const targetLenderId = req.params.lenderId;
-
-    // 2. Check who is making the request (using the protect middleware)
-    // If the logged-in user's ID matches the target ID, they are the owner.
     const isOwner = req.user && req.user.id === targetLenderId;
 
-    // 3. Perform the aggregation for completed orders
+    // Advanced Aggregation: Perfectly calculates real earnings
     const stats = await Order.aggregate([
       {
         $match: {
           lender: new mongoose.Types.ObjectId(targetLenderId),
-          status: "Completed",
+          status: { $in: ["Completed", "Completed (Damaged)"] },
         },
       },
       {
         $group: {
           _id: null,
           totalSuccessfulRentals: { $sum: 1 },
-          totalGrossRevenue: { $sum: "$totalCost" },
+          totalGrossRevenue: {
+            $sum: {
+              $cond: [
+                { $eq: ["$status", "Completed (Damaged)"] },
+                { $add: ["$rentalCost", "$securityDeposit"] }, // Keeps deposit if damaged
+                "$rentalCost", // Standard return: Only earns the rental fee!
+              ],
+            },
+          },
         },
       },
     ]);
 
-    // 4. Default baseline if they have no completed orders yet
     let responseData = { totalRentals: 0 };
-
     if (stats.length > 0) {
       responseData.totalRentals = stats[0].totalSuccessfulRentals;
-
-      // 5. Privacy Check: Only attach revenue if the requester is the Lender themselves
-      if (isOwner) {
-        responseData.totalRevenue = stats[0].totalGrossRevenue;
-      }
+      if (isOwner) responseData.totalRevenue = stats[0].totalGrossRevenue;
     }
 
-    res.status(200).json({
-      success: true,
-      message: "Lender statistics fetched successfully",
-      data: responseData,
-    });
+    res.status(200).json({ success: true, data: responseData });
   } catch (error) {
-    console.error("Lender Stats Error:", error);
     res
       .status(500)
       .json({ success: false, message: "Server error calculating stats" });
+  }
+};
+
+const updateOrderStatus = async (req, res) => {
+  try {
+    const { orderId, newStatus, action, rejectionNote, note } = req.body;
+
+    if (!orderId)
+      return res.status(400).json({ message: "Order ID is required" });
+
+    const order = await Order.findById(orderId);
+    if (!order) return res.status(404).json({ message: "Order not found" });
+
+    // Identify who is making the request
+    const isLender = String(order.lender) === String(req.user._id);
+    const isRenter = String(order.renter) === String(req.user._id);
+
+    // ==========================================
+    // 1. PAYMENT & SCREENSHOT ACTIONS
+    // ==========================================
+
+    // Renter removes their own screenshot
+    if (action === "remove_screenshot") {
+      if (!isRenter) return res.status(403).json({ message: "Not authorized" });
+      order.paymentProofImage = null;
+      order.paymentStatus = "Pending";
+      order.paymentRejectionNote = "";
+      await order.save({ validateModifiedOnly: true });
+      return res
+        .status(200)
+        .json({ message: "Screenshot removed successfully", order });
+    }
+
+    // Lender rejects the payment screenshot
+    if (action === "reject_payment") {
+      if (!isLender)
+        return res
+          .status(403)
+          .json({ message: "Only lenders can reject payments." });
+      order.paymentProofImage = null;
+      order.paymentStatus = "Rejected";
+      order.paymentRejectionNote =
+        rejectionNote || "Screenshot was unclear or invalid.";
+      await order.save({ validateModifiedOnly: true });
+      return res.status(200).json({ message: "Payment rejected", order });
+    }
+
+    // Lender verifies payment
+    if (action === "verify_payment") {
+      if (!isLender)
+        return res
+          .status(403)
+          .json({ message: "Only lenders can verify payments." });
+      if (order.status === "Pending") {
+        return res.status(400).json({
+          message: "You must accept the order before verifying the payment.",
+        });
+      }
+      order.paymentStatus = "Completed";
+      order.paymentRejectionNote = "";
+      await order.save({ validateModifiedOnly: true });
+      return res
+        .status(200)
+        .json({ message: "Payment verified successfully", order });
+    }
+
+    // ==========================================
+    // 2. DAMAGE & RETURN ACTIONS
+    // ==========================================
+
+    // Lender confirms item returned safely (No Damage)
+    if (action === "complete_safe_return") {
+      if (!isLender) return res.status(403).json({ message: "Not authorized" });
+      if (order.status !== "Return Pending" && order.status !== "Active") {
+        return res
+          .status(400)
+          .json({ message: "Order must be active or return pending." });
+      }
+
+      const returnedProduct = await Product.findById(order.product);
+      returnedProduct.stock += 1;
+      returnedProduct.isAvailable = true;
+      await returnedProduct.save();
+
+      order.status = "Completed";
+      order.damageFundStatus = "Refunded";
+      await order.save({ validateModifiedOnly: true });
+      return res
+        .status(200)
+        .json({ message: "Safe return confirmed. Deposit refunded.", order });
+    }
+
+    // Lender reports damage
+    if (action === "report_damage") {
+      if (!isLender) return res.status(403).json({ message: "Not authorized" });
+
+      order.status = "Damage Claimed";
+      order.damageReportNote =
+        note || "Lender reported damage without details.";
+      order.damageFundStatus = "Claimed";
+      await order.save({ validateModifiedOnly: true });
+      return res
+        .status(200)
+        .json({ message: "Damage reported. Renter notified.", order });
+    }
+
+    // Renter accepts the damage charge
+    if (action === "accept_damage_charge") {
+      if (!isRenter) return res.status(403).json({ message: "Not authorized" });
+
+      const damagedProduct = await Product.findById(order.product);
+      damagedProduct.stock += 1; // Return it to inventory, though lender might need to fix it
+      damagedProduct.isAvailable = true;
+      await damagedProduct.save();
+
+      order.status = "Completed (Damaged)";
+      order.damageFundStatus = "Claimed";
+      await order.save({ validateModifiedOnly: true });
+      return res
+        .status(200)
+        .json({ message: "Damage charge accepted.", order });
+    }
+
+    // Renter disputes the damage
+    if (action === "dispute_damage") {
+      if (!isRenter) return res.status(403).json({ message: "Not authorized" });
+      order.status = "Disputed";
+      order.damageFundStatus = "Disputed";
+      await order.save({ validateModifiedOnly: true });
+      return res
+        .status(200)
+        .json({ message: "Damage disputed. Admin notified.", order });
+    }
+
+    // ==========================================
+    // 3. STANDARD STATUS TRANSITIONS (Accept/Cancel)
+    // ==========================================
+
+    // Fallback checks for standard status updates
+    const isRenterCancelling = isRenter && newStatus === "Cancelled";
+    if (!isLender && !isRenterCancelling && newStatus) {
+      return res
+        .status(403)
+        .json({ message: "Not authorized to update this order" });
+    }
+
+    if (newStatus) {
+      switch (newStatus) {
+        case "Active":
+          if (order.status !== "Pending")
+            return res
+              .status(400)
+              .json({ message: "Order is no longer pending." });
+          const product = await Product.findById(order.product);
+          if (product.stock <= 0)
+            return res.status(400).json({ message: "Product out of stock!" });
+          product.stock -= 1;
+          if (product.stock === 0) product.isAvailable = false;
+          await product.save();
+          order.status = "Active";
+          break;
+
+        case "Cancelled":
+          if (order.status !== "Pending")
+            return res
+              .status(400)
+              .json({ message: "Only pending orders can be cancelled." });
+          order.status = "Cancelled";
+          break;
+
+        case "Completed":
+          // Safe fallback if they hit the old manual Complete route
+          if (order.status !== "Return Pending" && order.status !== "Active") {
+            return res
+              .status(400)
+              .json({ message: "Order must be returned by renter first." });
+          }
+          const completedProduct = await Product.findById(order.product);
+          completedProduct.stock += 1;
+          completedProduct.isAvailable = true;
+          await completedProduct.save();
+
+          order.status = "Completed";
+          order.damageFundStatus = "Refunded";
+          break;
+
+        default:
+          return res.status(400).json({ message: "Invalid status transition" });
+      }
+      await order.save({ validateModifiedOnly: true });
+      return res.status(200).json({ message: "Order status updated", order });
+    }
+
+    return res
+      .status(400)
+      .json({ message: "No valid action or status provided." });
+  } catch (error) {
+    console.error("Status Update Error:", error);
+    res.status(500).json({ message: "Server error updating status." });
   }
 };
 

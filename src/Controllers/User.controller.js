@@ -6,6 +6,8 @@ import sendEmail from "../Utilities/sendEmail.utilities.js";
 
 // ----------------- SIGNUP -------------------
 
+// ----------------- SIGNUP -------------------
+
 const Signup = async (req, res) => {
   const {
     name,
@@ -23,13 +25,6 @@ const Signup = async (req, res) => {
       .json({ success: false, message: "All required fields must be filled." });
   }
 
-  await sendEmail(
-    email,
-    "Udharo LMS - Verify Your Account",
-    `Welcome to Udharo! Your verification code is: ${otp}\n\nThis code expires in 10 minutes.`,
-  );
-  console.log(`🔑 Verification OTP for ${email}: ${otp}`);
-
   try {
     const existingUser = await User.findOne({ email });
     if (existingUser) {
@@ -39,15 +34,15 @@ const Signup = async (req, res) => {
           message: "User with this email already exists.",
         });
       }
-      // If user exists but is unverified, we can overwrite/update their pending registration details
+      // Overwrite pending registration details
       await User.deleteOne({ email });
     }
 
     // Hash data
     const hashedPassword = await bcrypt.hash(password, 10);
-    const hashedPhoneNumber = await bcrypt.hash(phoneNumber, 10);
+    // const hashedPhoneNumber = await bcrypt.hash(phoneNumber, 10);
 
-    // Generate 6-digit OTP code & 10-minute expiry
+    // 1. 👉 OTP is generated and DEFINED here
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
     const emailOtpExpiresAt = Date.now() + 10 * 60 * 1000;
 
@@ -55,7 +50,7 @@ const Signup = async (req, res) => {
     const newUser = new User({
       name,
       email,
-      phoneNumber: hashedPhoneNumber,
+      phoneNumber: phoneNumber,
       password: hashedPassword,
       role,
       lenderAddress: role === "renter" ? lenderAddress : undefined,
@@ -67,9 +62,14 @@ const Signup = async (req, res) => {
 
     await newUser.save();
 
-    // TODO: Send code via Nodemailer
-    // await sendEmail(email, "Udharo LMS Verification Code", `Your verification code is: ${otp}`);
-    console.log(`🔑 Verification OTP for ${email}: ${otp}`); // For backend console testing
+    // 2. 👉 Email is SENT here (Now it knows what 'otp' is!)
+    await sendEmail(
+      email,
+      "Udharo LMS - Verify Your Account",
+      `Welcome to Udharo! Your verification code is: ${otp}\n\nThis code expires in 10 minutes.`,
+    );
+
+    console.log(`🔑 Verification OTP for ${email}: ${otp}`);
 
     return res.status(200).json({
       success: true,
@@ -399,12 +399,10 @@ const resetPassword = async (req, res) => {
 
     await user.save();
 
-    return res
-      .status(200)
-      .json({
-        success: true,
-        message: "Password reset successfully! You can now log in.",
-      });
+    return res.status(200).json({
+      success: true,
+      message: "Password reset successfully! You can now log in.",
+    });
   } catch (error) {
     console.error("Reset Password Error:", error);
     return res
@@ -421,4 +419,6 @@ export {
   Login,
   uploadProfileImage,
   VerifyEmailOtp,
+  requestPasswordReset,
+  resetPassword,
 };
